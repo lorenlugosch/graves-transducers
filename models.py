@@ -21,8 +21,7 @@ class Model(torch.nn.Module):
 			self.layers.append(layer)
 
 			out_dim = config.num_hidden
-			if config.bidirectional:
-				out_dim *= 2
+			if config.bidirectional: out_dim *= 2
 
 			# grab hidden states for each timestep
 			layer = RNNOutputSelect()
@@ -69,13 +68,25 @@ class Model(torch.nn.Module):
 		# run the forward algorithm to compute the log probs
 		downsampling_factor = max(T) / out.shape[1]
 		T = [round(t / downsampling_factor) for t in T]
-		out = out.transpose(0,1) # (N, T, C) --> (T, N, C)
+		out = out.transpose(0,1) # (N, T, #labels) --> (T, N, #labels)
 		log_probs = -torch.nn.functional.ctc_loss(	log_probs=out,
 								targets=y,
 								input_lengths=T,
 								target_lengths=U,
 								reduction="none",
 								blank=self.blank_index)
+		"""
+		encoder_out = ... # (N, T, C1)
+		decoder_out = ... # (N, U, C2)
+		log_probs = transducer_forward(	encoder_out=encoder_out,
+						decoder_out=decoder_out,
+						joint_network=self.joint_network,
+						targets=y,
+						input_lengths=T,
+						target_lengths=U,
+						reduction="none",
+						blank=self.blank_index)
+		"""
 		return log_probs
 
 	def infer(self, x):
@@ -107,7 +118,7 @@ class RNNOutputSelect(torch.nn.Module):
 		super(RNNOutputSelect, self).__init__()
 
 	def forward(self, input):
-		return input[0] 
+		return input[0]
 
 class NCL2NLC(torch.nn.Module):
 	def __init__(self):
@@ -159,7 +170,8 @@ class ComputeFBANK(torch.nn.Module):
 
 	def forward(self, x):
 		"""
-		x : 
+		x : waveforms
+		returns : FBANK feature vectors
 		"""
 		fbank = torch.stack([torchaudio.compliance.kaldi.fbank(xx.unsqueeze(0), **self.fbank_params) for xx in x])
 		return fbank
