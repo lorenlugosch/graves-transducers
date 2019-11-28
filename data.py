@@ -59,14 +59,14 @@ def get_ASR_datasets(config):
 	test_df = pd.read_csv(os.path.join(base_path, "test_data.csv"))
 
 	# Create dataset objects
-	train_dataset = ASRDataset(train_df, config)
+	train_dataset = ASRDataset(train_df, config) #, tokenizer_sampling=True)
 	valid_dataset = ASRDataset(valid_df, config)
 	test_dataset = ASRDataset(test_df, config)
 
 	return train_dataset, valid_dataset, test_dataset
 
 class ASRDataset(torch.utils.data.Dataset):
-	def __init__(self, df, config):
+	def __init__(self, df, config, tokenizer_sampling=False):
 		"""
 		df: dataframe of wav file paths and transcripts
 		config: Config object (contains info about model and training)
@@ -107,6 +107,8 @@ class ASRDataset(torch.utils.data.Dataset):
 			tokenizer.Load(tokenizer_path)
 
 		self.tokenizer = tokenizer
+		self.tokenizer_sampling = tokenizer_sampling
+		if self.tokenizer_sampling: print("Using tokenizer sampling")
 		self.loader = torch.utils.data.DataLoader(self, batch_size=config.batch_size, num_workers=multiprocessing.cpu_count(), shuffle=True, collate_fn=CollateWavsASR())
 
 	def __len__(self):
@@ -114,8 +116,8 @@ class ASRDataset(torch.utils.data.Dataset):
 
 	def __getitem__(self, idx):
 		x, fs = sf.read(os.path.join(self.base_path, self.df.path[idx]))
-		y = self.tokenizer.EncodeAsIds(self.df.transcript[idx])
-		# y = self.tokenizer.SampleEncodeAsIds(self.df.transcript[idx], -1, 0.1)
+		if not self.tokenizer_sampling: y = self.tokenizer.EncodeAsIds(self.df.transcript[idx])
+		if self.tokenizer_sampling: y = self.tokenizer.SampleEncodeAsIds(self.df.transcript[idx], -1, 0.1)
 		return (x, y)
 
 class CollateWavsASR:
