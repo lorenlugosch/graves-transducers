@@ -39,6 +39,7 @@ def read_config(config_file):
 	#[training]
 	config.base_path=parser.get("training", "base_path")
 	config.lr=float(parser.get("training", "lr"))
+	config.lr_period=int(parser.get("training", "lr_period"))
 	config.batch_size=int(parser.get("training", "batch_size"))
 	config.num_epochs=int(parser.get("training", "num_epochs"))
 
@@ -118,7 +119,7 @@ class ASRDataset(torch.utils.data.Dataset):
 		x, fs = sf.read(os.path.join(self.base_path, self.df.path[idx]))
 		if not self.tokenizer_sampling: y = self.tokenizer.EncodeAsIds(self.df.transcript[idx])
 		if self.tokenizer_sampling: y = self.tokenizer.SampleEncodeAsIds(self.df.transcript[idx], -1, 0.1)
-		return (x, y)
+		return (x, y, idx)
 
 class CollateWavsASR:
 	def __call__(self, batch):
@@ -127,13 +128,14 @@ class CollateWavsASR:
 
 		Returns a minibatch of wavs and labels as Tensors.
 		"""
-		x = []; y = []
+		x = []; y = []; idxs = []
 		batch_size = len(batch)
 		for index in range(batch_size):
-			x_,y_ = batch[index]
+			x_,y_,idx = batch[index]
 
 			x.append(torch.tensor(x_).float())
 			y.append(torch.tensor(y_).long())
+			idxs.append(idx)
 
 		# pad all sequences to have same length
 		T = [len(x_) for x_ in x]
@@ -150,4 +152,4 @@ class CollateWavsASR:
 		x = torch.stack(x)
 		y = torch.stack(y)
 
-		return (x,y,T,U)
+		return (x,y,T,U,idxs)

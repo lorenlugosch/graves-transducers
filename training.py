@@ -10,9 +10,10 @@ class Trainer:
 		self.model = model
 		self.config = config
 		self.lr = config.lr
+		self.lr_period = config.lr_period
 		self.checkpoint_path = os.path.join(self.config.folder, "training")
 		self.optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
-		self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.5)
+		self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=self.lr_period, gamma=0.5)
 		self.epoch = 0
 		self.df = None
 		if torch.cuda.is_available(): self.model.cuda()
@@ -48,16 +49,14 @@ class Trainer:
 			print("Current learning rate:", g['lr'])
 		#self.model.print_frozen()
 		for idx, batch in enumerate(tqdm(dataset.loader)):
-			x,y,T,U = batch
+			x,y,T,U,idxs = batch
 			batch_size = len(x)
 			num_examples += batch_size
 			log_probs = self.model(x,y,T,U)
 			loss = -log_probs.mean()
 			if torch.isnan(loss):
 				print("nan detected!")
-				print(y)
-				print(T)
-				print(U)
+				print("indices of training examples that caused the nan:", idxs)
 				sys.exit()
 			self.optimizer.zero_grad()
 			loss.backward()
@@ -89,7 +88,7 @@ class Trainer:
 		self.model.eval()
 		#self.model.cpu(); self.model.is_cuda = False # beam search is memory-intensive; do on CPU for now
 		for idx, batch in enumerate(dataset.loader):
-			x,y,T,U = batch
+			x,y,T,U,_ = batch
 			batch_size = len(x)
 			num_examples += batch_size
 			log_probs = self.model(x,y,T,U)
