@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from models import Model
+from models import CTCModel
 from data import get_ASR_datasets, read_config
 from training import Trainer
 import argparse
@@ -20,7 +20,7 @@ config = read_config(config_path)
 torch.manual_seed(config.seed); np.random.seed(config.seed)
 
 # Initialize model
-model = Model(config=config)
+model = CTCModel(config=config)
 
 if train:
 	# Generate datasets

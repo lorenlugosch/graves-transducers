@@ -4,10 +4,99 @@ import numpy as np
 import sys
 import os
 import matplotlib.pyplot as plt
+import ctcdecode
+#from losses import TransducerLoss
 
-class Model(torch.nn.Module):
+class CTCModel(torch.nn.Module):
 	def __init__(self, config):
-		super(Model, self).__init__()
+		super(CTCModel, self).__init__()
+		self.encoder = Encoder(config)
+
+		# beam search
+		self.blank_index = self.encoder.blank_index; self.num_outputs = self.encoder.num_outputs
+		labels = ["a" for _ in range(self.num_outputs)] # doesn't matter, just need 1-char labels
+		self.decoder = ctcdecode.CTCBeamDecoder(labels, blank_id=self.blank_index, beam_width=config.beam_width)
+
+	def forward(self, x, y, T, U):
+		"""
+		returns log probs for each example
+		"""
+
+		# move inputs to GPU
+		if next(self.parameters()).is_cuda:
+			x = x.cuda()
+			y = y.cuda()
+
+		# run the neural network
+		encoder_out = self.encoder.forward(x, T)
+
+		# run the forward algorithm to compute the log probs
+		downsampling_factor = max(T) / encoder_out.shape[1]
+		T = [round(t / downsampling_factor) for t in T]
+		encoder_out = encoder_out.transpose(0,1) # (N, T, #labels) --> (T, N, #labels)
+		if max(U) > max(T):
+			print("Error! Output longer than input!")
+			sys.exit()
+		log_probs = -torch.nn.functional.ctc_loss(	log_probs=encoder_out,
+								targets=y,
+								input_lengths=T,
+								target_lengths=U,
+								reduction="none",
+								blank=self.blank_index)
+		return log_probs
+
+	def infer(self, x, T=None):
+		# move inputs to GPU
+		if next(self.parameters()).is_cuda:
+			x = x.cuda()
+
+		# run the neural network
+		out = self.encoder.forward(x, T)
+
+		# run a beam search
+		out = torch.nn.functional.softmax(out, dim=2)
+		beam_result, beam_scores, timesteps, out_seq_len = self.decoder.decode(out)
+		decoded = [beam_result[i][0][:out_seq_len[i][0]].tolist() for i in range(len(out))]
+		return decoded
+
+
+class TransducerModel(torch.nn.Module):
+	def __init__(self, config):
+		super(TransducerModel, self).__init__()
+		self.encoder = Encoder(config)
+		self.decoder = AutoregressiveDecoder(config)
+		self.transducer_loss = TransducerLoss()
+
+	def forward(self, x, y, T, U):
+		"""
+		returns log probs for each example
+		"""
+
+		# move inputs to GPU
+		if next(self.parameters()).is_cuda:
+			x = x.cuda()
+			y = y.cuda()
+
+		# run the neural network
+		encoder_out = self.encoder.forward(x, T) # (N, T, #labels)
+		decoder_out = self.decoder.forward(y, U) # (N, U, #labels)
+
+		"""
+		log_probs = -self.transducer_loss(encoder_out=encoder_out,
+						decoder_out=decoder_out,
+						#joint_network=self.joint_network,
+						targets=y,
+						input_lengths=T,
+						target_lengths=U,
+						reduction="none",
+						blank=self.blank_index)
+		return log_probs
+		"""
+		return 1
+
+class Encoder(torch.nn.Module):
+	def __init__(self, config):
+		super(Encoder, self).__init__()
 		self.layers = []
 
 		# compute FBANK features from waveform
@@ -32,8 +121,9 @@ class Model(torch.nn.Module):
 			self.layers.append(layer)
 
 			# downsample
-			layer = Downsample(method="avg", factor=2, axis=1)
-			self.layers.append(layer)
+			if idx % 2 == 0:
+				layer = Downsample(method="avg", factor=2, axis=1)
+				self.layers.append(layer)
 
 		# final classifier
 		self.num_outputs = config.num_tokens + 1 # for blank symbol
@@ -46,72 +136,22 @@ class Model(torch.nn.Module):
 
 		self.layers = torch.nn.ModuleList(self.layers)
 
-	def forward(self, x, y, T, U):
-		"""
-		returns log probs for each example
-		"""
-
-		# move inputs to GPU
-		if next(self.parameters()).is_cuda:
-			x = x.cuda()
-			y = y.cuda()
-
-		# run the neural network
-		out = x
-		for layer in self.layers:
-			#try:
-			#	print(out.shape)
-			#except:
-			#	pass
-			out = layer(out)
-
-		# run the forward algorithm to compute the log probs
-		downsampling_factor = max(T) / out.shape[1]
-		T = [round(t / downsampling_factor) for t in T]
-		out = out.transpose(0,1) # (N, T, #labels) --> (T, N, #labels)
-		log_probs = -torch.nn.functional.ctc_loss(	log_probs=out,
-								targets=y,
-								input_lengths=T,
-								target_lengths=U,
-								reduction="none",
-								blank=self.blank_index)
-		"""
-		encoder_out = ... # (N, T, C1)
-		decoder_out = ... # (N, U, C2)
-		log_probs = transducer_forward(	encoder_out=encoder_out,
-						decoder_out=decoder_out,
-						joint_network=self.joint_network,
-						targets=y,
-						input_lengths=T,
-						target_lengths=U,
-						reduction="none",
-						blank=self.blank_index)
-		"""
-		return log_probs
-
-	def infer(self, x):
-		# move inputs to GPU
-		if next(self.parameters()).is_cuda:
-			x = x.cuda()
-
-		# run the neural network
+	def forward(self, x, T):
 		out = x
 		for layer in self.layers:
 			out = layer(out)
 
-		# run a greedy search
-		peaks = out.max(2)[1]
-		decoded = []
-		for idx in range(len(peaks)):
-			decoded_ = []
-			p_ = None
-			for p in peaks[idx]:
-				p = p.item()
-				if p != self.num_outputs-1 and p != p_:
-					decoded_.append(p)
-				p_ = p
-			decoded.append(decoded_)
-		return decoded
+		return out
+
+class AutoregressiveDecoder(torch.nn.Module):
+	def __init__(self, config):
+		super(AutoregressiveDecoder, self).__init__()
+		#self.layers = []
+		self.num_outputs = config.num_tokens + 1 # for blank symbol
+
+	def forward(self, y, U):
+		batch_size = y.shape[0]
+		return torch.randn(batch_size, max(U), self.num_outputs)
 
 class RNNOutputSelect(torch.nn.Module):
 	def __init__(self):
