@@ -34,6 +34,7 @@ def read_config(config_file):
 	config.num_tokens=int(parser.get("model", "num_tokens"))
 	config.num_layers=int(parser.get("model", "num_layers"))
 	config.num_hidden=int(parser.get("model", "num_hidden"))
+	config.tokenizer_training_text_path=parser.get("model", "tokenizer_training_text_path")
 	config.bidirectional=True
 
 	#[training]
@@ -92,9 +93,9 @@ class ASRDataset(torch.utils.data.Dataset):
 			print("Tokenizer not found. Building tokenizer from training labels.")
 
 			# create txt file needed by tokenizer training
-			txt_path = os.path.join(self.base_path, "texts.txt")
-			with open(txt_path, "w") as f:
-				f.writelines([s + "\n" for s in df.transcript])
+			txt_path = os.path.join(self.base_path, config.tokenizer_training_text_path)
+			#with open(txt_path, "w") as f:
+			#	f.writelines([s + "\n" for s in df.transcript])
 
 			# train tokenizer
 			spm.SentencePieceTrainer.Train('--input=' + txt_path + ' --model_prefix=' + tokenizer_model_prefix + ' --vocab_size=' + str(num_tokens) + ' --hard_vocab_limit=false')
@@ -102,7 +103,7 @@ class ASRDataset(torch.utils.data.Dataset):
 			# move tokenizer to base_path
 			call("mv " + tokenizer_model_prefix + ".vocab " + self.base_path, shell=True)
 			call("mv " + tokenizer_model_prefix + ".model " + self.base_path, shell=True)
-			call("rm " + txt_path, shell=True)
+			#call("rm " + txt_path, shell=True)
 
 			# load it
 			tokenizer.Load(tokenizer_path)
