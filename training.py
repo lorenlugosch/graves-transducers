@@ -12,7 +12,7 @@ class Trainer:
 		self.lr = config.lr
 		self.checkpoint_path = os.path.join(self.config.folder, "training")
 		self.optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
-		self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer)
+		self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.5)
 		self.epoch = 0
 		self.df = None
 		if torch.cuda.is_available(): self.model.cuda()
@@ -53,18 +53,23 @@ class Trainer:
 			num_examples += batch_size
 			log_probs = self.model(x,y,T,U)
 			loss = -log_probs.mean()
+			if torch.isnan(loss):
+				print("nan detected!")
+				print(y)
+				print(T)
+				print(U)
+				sys.exit()
 			self.optimizer.zero_grad()
 			loss.backward()
 			clip_value = 5
 			torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_value)
 			self.optimizer.step()
-			train_loss += loss.item() * batch_size #train_loss += loss.cpu().data.numpy().item() * batch_size
-			#train_WER += WER.cpu().data.numpy().item() * batch_size
+			train_loss += loss.item() * batch_size
 			if idx % print_interval == 0:
 				print("loss: " + str(loss.cpu().data.numpy().item()))
 				guess = self.model.infer(x)[0][:U[0]]
 				print("guess:", dataset.tokenizer.DecodeIds(guess))
-				truth = [yy for yy in y[0].cpu().data.numpy().tolist() if yy != -1]
+				truth = y[0].cpu().data.numpy().tolist()[:U[0]]
 				print("truth:", dataset.tokenizer.DecodeIds(truth))
 				print("WER: ", compute_WER(dataset.tokenizer.DecodeIds(truth), dataset.tokenizer.DecodeIds(guess)))
 				print("")
@@ -89,7 +94,7 @@ class Trainer:
 			num_examples += batch_size
 			log_probs = self.model(x,y,T,U)
 			loss = -log_probs.mean()
-			test_loss += loss.item() * batch_size #loss.cpu().data.numpy().item() * batch_size
+			test_loss += loss.item() * batch_size
 			WERs = []
 			guesses = self.model.infer(x)
 			for i in range(batch_size):
@@ -104,7 +109,7 @@ class Trainer:
 			print("")
 
 		test_loss /= num_examples
-		self.scheduler.step(test_loss)
+		self.scheduler.step()
 		test_WER /= num_examples
 		results = {"loss" : test_loss, "WER" : test_WER, "set": set}
 		self.log(results)
