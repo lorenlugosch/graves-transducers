@@ -215,3 +215,35 @@ class ComputeFBANK(torch.nn.Module):
 		"""
 		fbank = torch.stack([torchaudio.compliance.kaldi.fbank(xx.unsqueeze(0), **self.fbank_params) for xx in x])
 		return fbank
+
+class SpecAugment(torch.nn.Module):
+	def __init__(self):
+		super(SpecAugment,self).__init__()
+		self.avg_time_mask_len = 100
+		self.avg_freq_mask_len = 27 # from Table 1: https://arxiv.org/pdf/1904.08779.pdf
+
+	def forward(self, x):
+		"""
+		x : spectrogram
+		returns : zero'd spectrogram
+		"""
+		if self.training:
+			T = x.shape[1]
+			F = x.shape[2]
+
+			f_len = int(np.random.rand()*self.avg_freq_mask_len)
+			f_min = int((F - f_len) * np.random.rand())
+			f_max = f_min + f_len
+
+			t_len = int(np.random.rand()*self.avg_time_mask_len)
+			t_min = int((T - t_len) * np.random.rand())
+			t_max = t_min + t_len
+
+			mask = torch.ones(x.shape)
+			mask[:,t_min:t_max,:] = 0
+			mask[:,:,f_min:f_max] = 0
+
+			out = x * mask
+			return out
+		else:
+			return x
