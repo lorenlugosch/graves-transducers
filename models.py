@@ -233,6 +233,7 @@ class SpecAugment(torch.nn.Module):
 			T = x.shape[1]
 			F = x.shape[2]
 
+			mask = torch.ones(x.shape)
 			for idx in range(N):
 				f_len = int(np.random.rand()*self.F_param)
 				f_min = int((F - f_len) * np.random.rand())
@@ -242,7 +243,6 @@ class SpecAugment(torch.nn.Module):
 				t_min = int((T - t_len) * np.random.rand())
 				t_max = t_min + t_len
 
-				mask = torch.ones(x.shape)
 				mask[idx,t_min:t_max,:] = 0
 				mask[idx,:,f_min:f_max] = 0
 
