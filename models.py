@@ -229,21 +229,24 @@ class SpecAugment(torch.nn.Module):
 		returns : zero'd spectrogram
 		"""
 		if self.training:
+			N = x.shape[0]
 			T = x.shape[1]
 			F = x.shape[2]
 
-			f_len = int(np.random.rand()*self.F_param)
-			f_min = int((F - f_len) * np.random.rand())
-			f_max = f_min + f_len
+			for idx in range(N):
+				f_len = int(np.random.rand()*self.F_param)
+				f_min = int((F - f_len) * np.random.rand())
+				f_max = f_min + f_len
 
-			t_len = int(np.random.rand()*self.T_param)
-			t_min = int((T - t_len) * np.random.rand())
-			t_max = t_min + t_len
+				t_len = int(np.random.rand()*self.T_param)
+				t_min = int((T - t_len) * np.random.rand())
+				t_max = t_min + t_len
 
-			mask = torch.ones(x.shape)
-			mask[:,t_min:t_max,:] = 0
-			mask[:,:,f_min:f_max] = 0
+				mask = torch.ones(x.shape)
+				mask[idx,t_min:t_max,:] = 0
+				mask[idx,:,f_min:f_max] = 0
 
+			mask.to(x.device)
 			out = x * mask
 			return out
 		else:
