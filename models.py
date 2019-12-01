@@ -202,25 +202,26 @@ class ComputeFBANK(torch.nn.Module):
                     "channel": 0,
                     "dither": 0.0,
                     "window_type": "hanning",
-                    "num_mel_bins":40,
+                    "num_mel_bins":80,
                     "remove_dc_offset": False,
                     "round_to_power_of_two": False,
                     "sample_frequency":16000.0,
                 }
 
-	def forward(self, x):
+	def forward(self, x, subtract_mean=False):
 		"""
 		x : waveforms
 		returns : FBANK feature vectors
 		"""
 		fbank = torch.stack([torchaudio.compliance.kaldi.fbank(xx.unsqueeze(0), **self.fbank_params) for xx in x])
+		if subtract_mean: fbank = fbank - fbank.mean(1)
 		return fbank
 
 class SpecAugment(torch.nn.Module):
 	def __init__(self):
 		super(SpecAugment,self).__init__()
-		self.avg_time_mask_len = 100
-		self.avg_freq_mask_len = 27 # from Table 1: https://arxiv.org/pdf/1904.08779.pdf
+		self.T_param = 100
+		self.F_param = 27 # from Table 1: https://arxiv.org/pdf/1904.08779.pdf
 
 	def forward(self, x):
 		"""
@@ -231,11 +232,11 @@ class SpecAugment(torch.nn.Module):
 			T = x.shape[1]
 			F = x.shape[2]
 
-			f_len = int(np.random.rand()*self.avg_freq_mask_len)
+			f_len = int(np.random.rand()*self.F_param)
 			f_min = int((F - f_len) * np.random.rand())
 			f_max = f_min + f_len
 
-			t_len = int(np.random.rand()*self.avg_time_mask_len)
+			t_len = int(np.random.rand()*self.T_param)
 			t_min = int((T - t_len) * np.random.rand())
 			t_max = t_min + t_len
 
