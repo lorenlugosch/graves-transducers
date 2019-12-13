@@ -34,13 +34,16 @@ def read_config(config_file):
 	config.num_tokens=int(parser.get("model", "num_tokens"))
 	config.num_layers=int(parser.get("model", "num_layers"))
 	config.num_hidden=int(parser.get("model", "num_hidden"))
+	config.num_mel_bins=int(parser.get("model", "num_mel_bins"))
 	config.tokenizer_training_text_path=parser.get("model", "tokenizer_training_text_path")
-	config.bidirectional=True
+	config.normalize_fbank=(parser.get("model", "normalize_fbank") == "True")
+	config.bidirectional=(parser.get("model", "bidirectional") == "True")
 
 	#[training]
 	config.base_path=parser.get("training", "base_path")
 	config.lr=float(parser.get("training", "lr"))
 	config.lr_period=int(parser.get("training", "lr_period"))
+	config.gamma=float(parser.get("training", "gamma"))
 	config.batch_size=int(parser.get("training", "batch_size"))
 	config.num_epochs=int(parser.get("training", "num_epochs"))
 
