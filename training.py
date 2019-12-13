@@ -11,12 +11,14 @@ class Trainer:
 		self.config = config
 		self.lr = config.lr
 		self.lr_period = config.lr_period
+		self.gamma = config.gamma
 		self.checkpoint_path = os.path.join(self.config.folder, "training")
 		self.optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
-		self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=self.lr_period, gamma=0.5)
+		self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=self.lr_period, gamma=self.gamma)
 		self.epoch = 0
 		self.df = None
 		if torch.cuda.is_available(): self.model.cuda()
+		self.best_WER = np.inf
 
 	def load_checkpoint(self):
 		if os.path.isfile(os.path.join(self.checkpoint_path, "model_state.pth")):
@@ -28,9 +30,16 @@ class Trainer:
 		else:
 			print("No previous model; starting from scratch")
 
-	def save_checkpoint(self):
+	def load_best_model(self):
+		device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+		self.model.load_state_dict(torch.load(os.path.join(self.checkpoint_path, "best_model.pth"), map_location=device))
+
+	def save_checkpoint(self, WER):
 		try:
 			torch.save(self.model.state_dict(), os.path.join(self.checkpoint_path, "model_state.pth"))
+			if WER < self.best_WER:
+				self.best_WER = WER
+				torch.save(self.model.state_dict(), os.path.join(self.checkpoint_path, "best_model.pth"))
 		except:
 			print("Could not save model")
 
@@ -51,22 +60,25 @@ class Trainer:
 		for idx, batch in enumerate(tqdm(dataset.loader)):
 			x,y,T,U,idxs = batch
 			batch_size = len(x)
-			num_examples += batch_size
 			log_probs = self.model(x,y,T,U)
 			loss = -log_probs.mean()
 			if torch.isnan(loss):
 				print("nan detected!")
 				print("indices of training examples that caused the nan:", idxs)
+				print("log_probs:", log_probs)
+				print("loss:", loss)
+				print("saving bad model...")
+				torch.save(self.model.state_dict(), os.path.join(self.checkpoint_path, "nan_model.pth"))
 				sys.exit()
 			self.optimizer.zero_grad()
 			loss.backward()
-			clip_value = 5
-			torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_value)
+			clip_value = 5; torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_value)
 			self.optimizer.step()
 			train_loss += loss.item() * batch_size
+			num_examples += batch_size
 			if idx % print_interval == 0:
 				print("loss: " + str(loss.cpu().data.numpy().item()))
-				guess = self.model.infer(x)[0][:U[0]]
+				guess = self.model.infer(x, T)[0][:U[0]]
 				print("guess:", dataset.tokenizer.DecodeIds(guess))
 				truth = y[0].cpu().data.numpy().tolist()[:U[0]]
 				print("truth:", dataset.tokenizer.DecodeIds(truth))
@@ -95,7 +107,7 @@ class Trainer:
 			loss = -log_probs.mean()
 			test_loss += loss.item() * batch_size
 			WERs = []
-			guesses = self.model.infer(x)
+			guesses = self.model.infer(x, T)
 			for i in range(batch_size):
 				guess = guesses[i][:U[i]]
 				truth = y[i].cpu().data.numpy().tolist()[:U[i]]
