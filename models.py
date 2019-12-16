@@ -97,6 +97,13 @@ class TransducerModel(torch.nn.Module):
 		"""
 		return 1
 
+class TimeRestrictedSelfAttention(torch.nn.Module):
+	def __init__(self, in_dim, out_dim, key_dim, filter_length, stride):
+		super(TimeRestrictedSelfAttention, self).__init__()
+		self.key_linear = torch.nn.Linear(in_dim, key_dim)
+		self.query_linear = torch.nn.Linear(in_dim, key_dim)
+		self.value_linear = torch.nn.Linear(in_dim, out_dim)
+
 class Conv(torch.nn.Module):
 	def __init__(self, in_dim, out_dim, filter_length, stride):
 		super(Conv, self).__init__()
@@ -112,7 +119,7 @@ class Conv(torch.nn.Module):
 		left_padding = int(self.filter_length/2)
 		right_padding = int(self.filter_length/2)
 		out = torch.nn.functional.pad(out, (left_padding, right_padding))
-		out = self.conv(out) / self.filter_length # HACK seeing if this helps
+		out = self.conv(out) #/ self.filter_length # HACK seeing if this helps
 		out = out.transpose(1,2)
 		return out
 
@@ -126,7 +133,7 @@ class Encoder(torch.nn.Module):
 		self.layers.append(layer)
 		out_dim = config.num_mel_bins
 
-		# convolution to give future context
+		# convolutional
 		context_len = 11 # 11 fbank frames
 		layer = Conv(in_dim=out_dim, out_dim=config.num_hidden, filter_length=context_len, stride=2)
 		self.layers.append(layer)
@@ -249,6 +256,7 @@ class ComputeFBANK(torch.nn.Module):
                     "round_to_power_of_two": False,
                     "sample_frequency":16000.0,
                 }
+		self.normalizer = torch.nn.Parameter(torch.tensor([1/10] * self.num_mel_bins))
 
 	def forward(self, input):
 		"""
@@ -263,6 +271,7 @@ class ComputeFBANK(torch.nn.Module):
 		batch_size = len(x)
 		for idx in range(batch_size):
 			fbank_ = torchaudio.compliance.kaldi.fbank(x[idx].unsqueeze(0), **self.fbank_params)
+			fbank_ = fbank_ * self.normalizer.unsqueeze(0)
 			fbanks.append(fbank_)
 
 		if self.subtract_mean:
