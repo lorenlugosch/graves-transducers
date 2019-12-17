@@ -119,7 +119,7 @@ class Conv(torch.nn.Module):
 		left_padding = int(self.filter_length/2)
 		right_padding = int(self.filter_length/2)
 		out = torch.nn.functional.pad(out, (left_padding, right_padding))
-		out = self.conv(out) #/ self.filter_length # HACK seeing if this helps
+		out = self.conv(out)
 		out = out.transpose(1,2)
 		return out
 
