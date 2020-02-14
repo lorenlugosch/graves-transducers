@@ -126,6 +126,9 @@ class ASRDataset(torch.utils.data.Dataset):
 		return (x, y, idx)
 
 class CollateWavsASR:
+	def __init__(self):
+		self.max_length = 500000
+
 	def __call__(self, batch):
 		"""
 		batch: list of tuples (input wav, output labels)
@@ -137,9 +140,13 @@ class CollateWavsASR:
 		for index in range(batch_size):
 			x_,y_,idx = batch[index]
 
-			x.append(torch.tensor(x_).float())
-			y.append(torch.tensor(y_).long())
-			idxs.append(idx)
+			# throw away large audios
+			if len(x_) < self.max_length:
+				x.append(torch.tensor(x_).float())
+				y.append(torch.tensor(y_).long())
+				idxs.append(idx)
+
+		batch_size = len(idxs) # in case we threw some away
 
 		# pad all sequences to have same length
 		T = [len(x_) for x_ in x]
