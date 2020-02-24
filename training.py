@@ -62,13 +62,9 @@ class Trainer:
 			batch_size = len(x)
 			log_probs = self.model(x,y,T,U)
 			loss = -log_probs.mean()
+			print("loss:", loss)
 			if torch.isnan(loss):
 				print("nan detected!")
-				print("indices of training examples that caused the nan:", idxs)
-				print("log_probs:", log_probs)
-				print("loss:", loss)
-				print("saving bad model...")
-				torch.save(self.model.state_dict(), os.path.join(self.checkpoint_path, "nan_model.pth"))
 				sys.exit()
 			self.optimizer.zero_grad()
 			loss.backward()
@@ -76,6 +72,7 @@ class Trainer:
 			self.optimizer.step()
 			train_loss += loss.item() * batch_size
 			num_examples += batch_size
+			"""
 			if idx % print_interval == 0:
 				print("loss: " + str(loss.cpu().data.numpy().item()))
 				guess = self.model.infer(x, T)[0][:U[0]]
@@ -84,6 +81,7 @@ class Trainer:
 				print("truth:", dataset.tokenizer.DecodeIds(truth))
 				print("WER: ", compute_WER(dataset.tokenizer.DecodeIds(truth), dataset.tokenizer.DecodeIds(guess)))
 				print("")
+			"""
 
 		train_loss /= num_examples
 		train_WER /= num_examples

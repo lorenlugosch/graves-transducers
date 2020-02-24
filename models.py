@@ -5,7 +5,8 @@ import sys
 import os
 import matplotlib.pyplot as plt
 import ctcdecode
-#from losses import TransducerLoss
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
 
 class CTCModel(torch.nn.Module):
 	def __init__(self, config):
@@ -62,12 +63,77 @@ class CTCModel(torch.nn.Module):
 		decoded = [beam_result[i][0][:out_seq_len[i][0]].tolist() for i in range(len(out))]
 		return decoded
 
+class TransducerLoss(torch.nn.Module):
+	def __init__(self):
+		super(TransducerLoss, self).__init__()
+
+	def compute_log_alpha_and_log_prob(self, encoder_out, decoder_out, y, blank):
+		"""
+		encoder_out: FloatTensor (T, #labels)
+		decoder_out: FloatTensor (U+1, #labels)
+		y: LongTensor (U,)
+		blank: int
+		"""
+		T = len(encoder_out)
+		U = len(y)
+		log_alpha = torch.zeros(T, U+1) #[]
+		log_alpha = log_alpha.to(encoder_out.device)
+		for t in range(T):
+			for u in range(U + 1):
+				if u == 0:
+					if t == 0:
+						log_alpha[t,u] = 0.
+
+					else: #t > 0
+						null_t_1_0 = encoder_out[t-1, blank] + decoder_out[0, blank]
+						log_alpha[t,u] = log_alpha[t-1,u] + null_t_1_0
+
+				else: #u > 0
+					if t == 0:
+						y_0_u_1 = encoder_out[t, y[u-1]] + decoder_out[u-1, y[u-1]]
+						log_alpha[t,u] = log_alpha[t,u-1] + y_0_u_1
+
+					else: #t > 0
+						y_t_u_1 = encoder_out[t, y[u-1]] + decoder_out[u-1, y[u-1]]
+						null_t_1_u = encoder_out[t-1, blank] + decoder_out[u, blank]
+						log_alpha[t,u] = torch.logsumexp(torch.stack([
+							log_alpha[t-1,u] + null_t_1_u,
+							log_alpha[t,u-1] + y_t_u_1
+						]), dim=0)
+
+		null_T_1_U = encoder_out[T-1, blank] + decoder_out[U, blank]
+		log_p_y_x = log_alpha[T-1,U] + null_T_1_U
+		return log_p_y_x
+
+	def forward(self,encoder_out,decoder_out,targets,input_lengths,target_lengths,reduction="none",blank=0):
+		"""
+		encoder_out: FloatTensor (N, max(input_lengths), #labels)
+		decoder_out: FloatTensor (N, max(target_lengths)+1, #labels)
+		targets: LongTensor (N, max(target_lengths))
+		input_lengths: LongTensor (N)
+		target_lengths: LongTensor (N)
+		reduction: "none", "avg"
+		blank: int
+		"""
+
+		batch_size = len(input_lengths)
+		log_probs = []
+		for i in range(0, batch_size):
+			encoder_out_ = encoder_out[i, :input_lengths[i], :]
+			decoder_out_ = decoder_out[i, :target_lengths[i]+1, :]
+			y = targets[i, :target_lengths[i]]
+			log_p_y_x = self.compute_log_alpha_and_log_prob(encoder_out_, decoder_out_, y, blank)
+			log_probs.append(log_p_y_x)
+		log_probs = torch.stack(log_probs)
+
+		return log_probs
 
 class TransducerModel(torch.nn.Module):
 	def __init__(self, config):
 		super(TransducerModel, self).__init__()
 		self.encoder = Encoder(config)
 		self.decoder = AutoregressiveDecoder(config)
+		self.blank_index = self.encoder.blank_index
 		self.transducer_loss = TransducerLoss()
 
 	def forward(self, x, y, T, U):
@@ -84,8 +150,7 @@ class TransducerModel(torch.nn.Module):
 		encoder_out = self.encoder.forward(x, T) # (N, T, #labels)
 		decoder_out = self.decoder.forward(y, U) # (N, U, #labels)
 
-		"""
-		log_probs = -self.transducer_loss(encoder_out=encoder_out,
+		log_probs = self.transducer_loss(encoder_out=encoder_out,
 						decoder_out=decoder_out,
 						#joint_network=self.joint_network,
 						targets=y,
@@ -94,8 +159,6 @@ class TransducerModel(torch.nn.Module):
 						reduction="none",
 						blank=self.blank_index)
 		return log_probs
-		"""
-		return 1
 
 class TimeRestrictedSelfAttention(torch.nn.Module):
 	def __init__(self, in_dim, out_dim, key_dim, filter_length, stride):
@@ -190,15 +253,65 @@ class Encoder(torch.nn.Module):
 
 		return out
 
+class DecoderRNN(torch.nn.Module):
+	def __init__(self, num_decoder_layers, num_decoder_hidden, input_size, dropout):
+		super(DecoderRNN, self).__init__()
+		# self.gru = torch.nn.GRUCell(input_size=input_size, hidden_size=num_decoder_hidden)
+		# self.dropout = torch.nn.Dropout(dropout)
+
+		self.layers = []
+		self.num_layers = num_decoder_layers
+		for index in range(num_decoder_layers):
+			if index == 0: 
+				layer = torch.nn.GRUCell(input_size=input_size, hidden_size=num_decoder_hidden) 
+			else:
+				layer = torch.nn.GRUCell(input_size=num_decoder_hidden, hidden_size=num_decoder_hidden) 
+			layer.name = "gru%d"%index
+			self.layers.append(layer)
+
+			layer = torch.nn.Dropout(p=dropout)
+			layer.name = "dropout%d"%index
+			self.layers.append(layer)
+		self.layers = torch.nn.ModuleList(self.layers)
+
+	def forward(self, input, previous_state):
+		"""
+		input: Tensor of shape (batch size, input_size)
+		previous_state: Tensor of shape (batch size, num_decoder_layers, num_decoder_hidden)
+		Given the input vector, update the hidden state of each decoder layer.
+		"""
+		# return self.gru(input, previous_state)
+
+		state = []
+		batch_size = input.shape[0]
+		gru_index = 0
+		for index, layer in enumerate(self.layers):
+			if index == 0:
+				layer_out = layer(input, previous_state[:, gru_index])
+				state.append(layer_out)
+				gru_index += 1
+			else:
+				if "gru" in layer.name:
+					layer_out = layer(layer_out, previous_state[:, gru_index])
+					state.append(layer_out)
+					gru_index += 1
+				else: 
+					layer_out = layer(layer_out)
+		state = torch.stack(state, dim=1)
+		return state
+
 class AutoregressiveDecoder(torch.nn.Module):
 	def __init__(self, config):
 		super(AutoregressiveDecoder, self).__init__()
-		#self.layers = []
+		self.layers = []
+		#self.rnn = DecoderRNN(num_decoder_layers, num_decoder_hidden, input_size, dropout=0.5)
 		self.num_outputs = config.num_tokens + 1 # for blank symbol
 
 	def forward(self, y, U):
 		batch_size = y.shape[0]
-		return torch.randn(batch_size, max(U), self.num_outputs)
+		out = torch.zeros(batch_size, max(U)+1, self.num_outputs) #.log_softmax(2)
+		out = out.to(y.device)
+		return out
 
 class RNNOutputSelect(torch.nn.Module):
 	def __init__(self):
