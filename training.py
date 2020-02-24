@@ -49,7 +49,7 @@ class Trainer:
 		self.df.loc[len(self.df)] = results
 		self.df.to_csv(os.path.join(self.checkpoint_path, "log.csv"))
 
-	def train(self, dataset, print_interval=100):
+	def train(self, dataset, print_interval=10):
 		train_WER = 0
 		train_loss = 0
 		num_examples = 0
@@ -62,7 +62,7 @@ class Trainer:
 			batch_size = len(x)
 			log_probs = self.model(x,y,T,U)
 			loss = -log_probs.mean()
-			print("loss:", loss)
+			print(loss)
 			if torch.isnan(loss):
 				print("nan detected!")
 				sys.exit()
@@ -72,7 +72,6 @@ class Trainer:
 			self.optimizer.step()
 			train_loss += loss.item() * batch_size
 			num_examples += batch_size
-			"""
 			if idx % print_interval == 0:
 				print("loss: " + str(loss.cpu().data.numpy().item()))
 				guess = self.model.infer(x, T)[0][:U[0]]
@@ -81,7 +80,6 @@ class Trainer:
 				print("truth:", dataset.tokenizer.DecodeIds(truth))
 				print("WER: ", compute_WER(dataset.tokenizer.DecodeIds(truth), dataset.tokenizer.DecodeIds(guess)))
 				print("")
-			"""
 
 		train_loss /= num_examples
 		train_WER /= num_examples

@@ -133,8 +133,9 @@ class TransducerModel(torch.nn.Module):
 		super(TransducerModel, self).__init__()
 		self.encoder = Encoder(config)
 		self.decoder = AutoregressiveDecoder(config)
-		self.blank_index = self.encoder.blank_index
+		self.blank_index = self.encoder.blank_index; self.num_outputs = self.encoder.num_outputs
 		self.transducer_loss = TransducerLoss()
+		self.ctc_decoder = ctcdecode.CTCBeamDecoder(["a" for _ in range(self.num_outputs)], blank_id=self.blank_index, beam_width=config.beam_width)
 
 	def forward(self, x, y, T, U):
 		"""
@@ -159,6 +160,21 @@ class TransducerModel(torch.nn.Module):
 						reduction="none",
 						blank=self.blank_index)
 		return log_probs
+
+	def infer(self, x, T=None):
+		# move inputs to GPU
+		if next(self.parameters()).is_cuda:
+			x = x.cuda()
+
+		# run the neural network
+		out = self.encoder.forward(x, T)
+
+		# run a beam search
+		# (for now, just do CTC decoding)
+		out = torch.nn.functional.softmax(out, dim=2)
+		beam_result, beam_scores, timesteps, out_seq_len = self.ctc_decoder.decode(out)
+		decoded = [beam_result[i][0][:out_seq_len[i][0]].tolist() for i in range(len(out))]
+		return decoded
 
 class TimeRestrictedSelfAttention(torch.nn.Module):
 	def __init__(self, in_dim, out_dim, key_dim, filter_length, stride):
