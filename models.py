@@ -67,44 +67,6 @@ class TransducerLoss(torch.nn.Module):
 	def __init__(self):
 		super(TransducerLoss, self).__init__()
 
-	def compute_log_alpha_and_log_prob(self, encoder_out, decoder_out, y, blank):
-		"""
-		encoder_out: FloatTensor (T, #labels)
-		decoder_out: FloatTensor (U+1, #labels)
-		y: LongTensor (U,)
-		blank: int
-		"""
-		T = len(encoder_out)
-		U = len(y)
-		log_alpha = torch.zeros(T, U+1) #[]
-		log_alpha = log_alpha.to(encoder_out.device)
-		for t in range(T):
-			for u in range(U + 1):
-				if u == 0:
-					if t == 0:
-						log_alpha[t,u] = 0.
-
-					else: #t > 0
-						null_t_1_0 = encoder_out[t-1, blank] + decoder_out[0, blank]
-						log_alpha[t,u] = log_alpha[t-1,u] + null_t_1_0
-
-				else: #u > 0
-					if t == 0:
-						y_0_u_1 = encoder_out[t, y[u-1]] + decoder_out[u-1, y[u-1]]
-						log_alpha[t,u] = log_alpha[t,u-1] + y_0_u_1
-
-					else: #t > 0
-						y_t_u_1 = encoder_out[t, y[u-1]] + decoder_out[u-1, y[u-1]]
-						null_t_1_u = encoder_out[t-1, blank] + decoder_out[u, blank]
-						log_alpha[t,u] = torch.logsumexp(torch.stack([
-							log_alpha[t-1,u] + null_t_1_u,
-							log_alpha[t,u-1] + y_t_u_1
-						]), dim=0)
-
-		null_T_1_U = encoder_out[T-1, blank] + decoder_out[U, blank]
-		log_p_y_x = log_alpha[T-1,U] + null_T_1_U
-		return log_p_y_x
-
 	def forward(self,encoder_out,decoder_out,targets,input_lengths,target_lengths,reduction="none",blank=0):
 		"""
 		encoder_out: FloatTensor (N, max(input_lengths), #labels)
@@ -115,17 +77,48 @@ class TransducerLoss(torch.nn.Module):
 		reduction: "none", "avg"
 		blank: int
 		"""
+		batch_size = encoder_out.shape[0]
+		T_max = encoder_out.shape[1]
+		U_max = decoder_out.shape[1]
+		y = targets
 
-		batch_size = len(input_lengths)
+		log_alpha = torch.zeros(batch_size, T_max, U_max)
+		log_alpha = log_alpha.to(encoder_out.device)
+		for t in range(T_max):
+			for u in range(U_max):
+				if u == 0:
+
+					if t == 0:
+						log_alpha[:, t, u] = 0.
+
+					else: #t > 0
+						null_t_1_0 = encoder_out[:, t-1, blank] + decoder_out[:, 0, blank]
+						log_alpha[:, t, u] = log_alpha[:, t-1, u] + null_t_1_0
+
+				else: #u > 0
+
+					if t == 0:
+						y_0_u_1 = torch.gather(encoder_out[:, t], dim=1, index=y[:,u-1].view(-1,1) ).reshape(-1) + torch.gather(decoder_out[:, u-1], dim=1, index=y[:,u-1].view(-1,1)).reshape(-1)
+						log_alpha[:, t, u] = log_alpha[:,t,u-1] + y_0_u_1
+
+					else: #t > 0
+						y_t_u_1 = torch.gather(encoder_out[:, t], dim=1, index=y[:,u-1].view(-1,1)).reshape(-1) + torch.gather(decoder_out[:, u-1], dim=1, index=y[:,u-1].view(-1,1)).reshape(-1)
+						null_t_1_u = encoder_out[:, t-1, blank] + decoder_out[:, u, blank]
+
+						log_alpha[:, t, u] = torch.logsumexp(torch.stack([
+							log_alpha[:, t-1, u] + null_t_1_u,
+							log_alpha[:, t, u-1] + y_t_u_1
+						]), dim=0)
+
 		log_probs = []
-		for i in range(0, batch_size):
-			encoder_out_ = encoder_out[i, :input_lengths[i], :]
-			decoder_out_ = decoder_out[i, :target_lengths[i]+1, :]
-			y = targets[i, :target_lengths[i]]
-			log_p_y_x = self.compute_log_alpha_and_log_prob(encoder_out_, decoder_out_, y, blank)
+		for i in range(batch_size):
+			T = input_lengths[i]
+			U = target_lengths[i]
+			null_T_1_U = encoder_out[i, T-1, blank] + decoder_out[i, U, blank]
+			log_p_y_x = log_alpha[i, T-1, U] + null_T_1_U
 			log_probs.append(log_p_y_x)
-		log_probs = torch.stack(log_probs)
 
+		log_probs = torch.stack(log_probs)
 		return log_probs
 
 class TransducerModel(torch.nn.Module):
@@ -151,6 +144,8 @@ class TransducerModel(torch.nn.Module):
 		encoder_out = self.encoder.forward(x, T) # (N, T, #labels)
 		decoder_out = self.decoder.forward(y, U) # (N, U, #labels)
 
+		downsampling_factor = max(T) / encoder_out.shape[1]
+		T = [round(t / downsampling_factor) for t in T]
 		log_probs = self.transducer_loss(encoder_out=encoder_out,
 						decoder_out=decoder_out,
 						#joint_network=self.joint_network,
@@ -244,9 +239,9 @@ class Encoder(torch.nn.Module):
 			self.layers.append(layer)
 
 			# downsample
-			if idx == 0:
-				layer = Downsample(method="avg", factor=2, axis=1)
-				self.layers.append(layer)
+			#if idx == 0:
+			layer = Downsample(method="avg", factor=2, axis=1)
+			self.layers.append(layer)
 
 		#layer = torch.nn.LeakyReLU(0.125)
 		#self.layers.append(layer)
