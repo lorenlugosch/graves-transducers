@@ -32,8 +32,10 @@ def read_config(config_file):
 
 	#[model]
 	config.num_tokens=int(parser.get("model", "num_tokens"))
-	config.num_layers=int(parser.get("model", "num_layers"))
-	config.num_hidden=int(parser.get("model", "num_hidden"))
+	config.num_encoder_layers=int(parser.get("model", "num_encoder_layers"))
+	config.num_encoder_hidden=int(parser.get("model", "num_encoder_hidden"))
+	config.num_decoder_layers=int(parser.get("model", "num_decoder_layers"))
+	config.num_decoder_hidden=int(parser.get("model", "num_decoder_hidden"))
 	config.num_mel_bins=int(parser.get("model", "num_mel_bins"))
 	config.tokenizer_training_text_path=parser.get("model", "tokenizer_training_text_path")
 	config.normalize_fbank=(parser.get("model", "normalize_fbank") == "True")
@@ -158,7 +160,7 @@ class CollateWavsASR:
 			x[index] = torch.nn.functional.pad(x[index], (0,x_pad_length))
 
 			y_pad_length = (U_max - len(y[index]))
-			y[index] = torch.nn.functional.pad(y[index], (0,y_pad_length), value=-1)
+			y[index] = torch.nn.functional.pad(y[index], (0,y_pad_length), value=0)
 
 		x = torch.stack(x)
 		y = torch.stack(y)

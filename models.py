@@ -5,8 +5,10 @@ import sys
 import os
 import matplotlib.pyplot as plt
 import ctcdecode
-from concurrent.futures import ProcessPoolExecutor
-import multiprocessing
+
+awni_transducer_path = '/home/lugosch/code/transducer'
+sys.path.insert(0, awni_transducer_path)
+from transducer import Transducer
 
 class CTCModel(torch.nn.Module):
 	def __init__(self, config):
@@ -127,7 +129,8 @@ class TransducerModel(torch.nn.Module):
 		self.encoder = Encoder(config)
 		self.decoder = AutoregressiveDecoder(config)
 		self.blank_index = self.encoder.blank_index; self.num_outputs = self.encoder.num_outputs
-		self.transducer_loss = TransducerLoss()
+		#self.transducer_loss = TransducerLoss()
+		self.transducer_loss = Transducer(blank_label=self.blank_index)
 		self.ctc_decoder = ctcdecode.CTCBeamDecoder(["a" for _ in range(self.num_outputs)], blank_id=self.blank_index, beam_width=config.beam_width)
 
 	def forward(self, x, y, T, U):
@@ -143,9 +146,17 @@ class TransducerModel(torch.nn.Module):
 		# run the neural network
 		encoder_out = self.encoder.forward(x, T) # (N, T, #labels)
 		decoder_out = self.decoder.forward(y, U) # (N, U, #labels)
+		joint_out = (encoder_out.unsqueeze(2) + decoder_out.unsqueeze(1)).log_softmax(3)
 
 		downsampling_factor = max(T) / encoder_out.shape[1]
 		T = [round(t / downsampling_factor) for t in T]
+		T = torch.IntTensor(T)
+		U = torch.IntTensor(U)
+		yy = [y[i, :U[i]].tolist() for i in range(len(y))]
+		y = torch.IntTensor([yyyy for yyy in yy for yyyy in yyy]) # god help me
+
+		"""
+		# my implementation:
 		log_probs = self.transducer_loss(encoder_out=encoder_out,
 						decoder_out=decoder_out,
 						#joint_network=self.joint_network,
@@ -154,6 +165,13 @@ class TransducerModel(torch.nn.Module):
 						target_lengths=U,
 						reduction="none",
 						blank=self.blank_index)
+		"""
+		log_probs = -self.transducer_loss.apply(
+					joint_out,
+					y,
+					T,
+					U
+				)
 		return log_probs
 
 	def infer(self, x, T=None):
@@ -161,6 +179,7 @@ class TransducerModel(torch.nn.Module):
 		if next(self.parameters()).is_cuda:
 			x = x.cuda()
 
+		"""
 		# run the neural network
 		out = self.encoder.forward(x, T)
 
@@ -169,6 +188,34 @@ class TransducerModel(torch.nn.Module):
 		out = torch.nn.functional.softmax(out, dim=2)
 		beam_result, beam_scores, timesteps, out_seq_len = self.ctc_decoder.decode(out)
 		decoded = [beam_result[i][0][:out_seq_len[i][0]].tolist() for i in range(len(out))]
+		"""
+
+		encoder_out = self.encoder.forward(x, T)
+		batch_size = encoder_out.shape[0]
+		downsampling_factor = max(T) / encoder_out.shape[1]
+		T = [round(t / downsampling_factor) for t in T]
+		decoded = []
+		U_max = max(T)
+		for i in range(batch_size):
+			t = 0
+			u = 0
+			decoded_i = []
+			y_u = torch.tensor([self.decoder.start_symbol] * 1).to(x.device)
+			decoder_state = torch.stack([self.decoder.initial_state] * 1).to(x.device)
+			while t < T[i]:
+				decoder_out, decoder_state = self.decoder.forward_one_step(y_u, decoder_state)
+				joint_out = (encoder_out[i, t] + decoder_out).log_softmax(1)
+				y_u = joint_out.max(dim=1)[1]
+				if y_u.item() == self.blank_index:
+					t += 1
+				else:
+					u += 1
+					decoded_i.append(y_u.item())
+				if u > U_max:
+					print("Search exceeded U_max")
+					break
+
+			decoded.append(decoded_i)
 		return decoded
 
 class TimeRestrictedSelfAttention(torch.nn.Module):
@@ -209,18 +256,18 @@ class Encoder(torch.nn.Module):
 
 		# convolutional
 		context_len = 11 # 11 fbank frames
-		layer = Conv(in_dim=out_dim, out_dim=config.num_hidden, filter_length=context_len, stride=2)
+		layer = Conv(in_dim=out_dim, out_dim=config.num_encoder_hidden, filter_length=context_len, stride=2)
 		self.layers.append(layer)
-		out_dim = config.num_hidden
+		out_dim = config.num_encoder_hidden
 		layer = torch.nn.LeakyReLU(0.125)
 		self.layers.append(layer)
 
-		for idx in range(config.num_layers):
+		for idx in range(config.num_encoder_layers):
 			# recurrent
-			layer = torch.nn.GRU(input_size=out_dim, hidden_size=config.num_hidden, batch_first=True, bidirectional=config.bidirectional)
+			layer = torch.nn.GRU(input_size=out_dim, hidden_size=config.num_encoder_hidden, batch_first=True, bidirectional=config.bidirectional)
 			self.layers.append(layer)
 
-			out_dim = config.num_hidden
+			out_dim = config.num_encoder_hidden
 			if config.bidirectional: out_dim *= 2
 
 			# grab hidden states for each timestep
@@ -232,28 +279,28 @@ class Encoder(torch.nn.Module):
 			self.layers.append(layer)
 
 			# fully-connected
-			layer = torch.nn.Linear(out_dim, config.num_hidden)
-			out_dim = config.num_hidden
+			layer = torch.nn.Linear(out_dim, config.num_encoder_hidden)
+			out_dim = config.num_encoder_hidden
 			self.layers.append(layer)
 			layer = torch.nn.LeakyReLU(0.125)
 			self.layers.append(layer)
 
 			# downsample
-			#if idx == 0:
-			layer = Downsample(method="avg", factor=2, axis=1)
-			self.layers.append(layer)
+			if idx == 0:
+				layer = Downsample(method="avg", factor=2, axis=1)
+				self.layers.append(layer)
 
 		#layer = torch.nn.LeakyReLU(0.125)
 		#self.layers.append(layer)
 
 		# final classifier
 		self.num_outputs = config.num_tokens + 1 # for blank symbol
-		self.blank_index = config.num_tokens
+		self.blank_index = 0 #this is hard-coded in awni's transducer code #config.num_tokens
 		layer = torch.nn.Linear(out_dim, self.num_outputs)
 		self.layers.append(layer)
 
-		layer = torch.nn.LogSoftmax(dim=2)
-		self.layers.append(layer)
+		#layer = torch.nn.LogSoftmax(dim=2)
+		#self.layers.append(layer)
 
 		self.layers = torch.nn.ModuleList(self.layers)
 
@@ -267,11 +314,9 @@ class Encoder(torch.nn.Module):
 class DecoderRNN(torch.nn.Module):
 	def __init__(self, num_decoder_layers, num_decoder_hidden, input_size, dropout):
 		super(DecoderRNN, self).__init__()
-		# self.gru = torch.nn.GRUCell(input_size=input_size, hidden_size=num_decoder_hidden)
-		# self.dropout = torch.nn.Dropout(dropout)
 
 		self.layers = []
-		self.num_layers = num_decoder_layers
+		self.num_decoder_layers = num_decoder_layers
 		for index in range(num_decoder_layers):
 			if index == 0: 
 				layer = torch.nn.GRUCell(input_size=input_size, hidden_size=num_decoder_hidden) 
@@ -297,17 +342,16 @@ class DecoderRNN(torch.nn.Module):
 		batch_size = input.shape[0]
 		gru_index = 0
 		for index, layer in enumerate(self.layers):
-			if index == 0:
-				layer_out = layer(input, previous_state[:, gru_index])
+			if "gru" in layer.name:
+				if index == 0:
+					gru_input = input
+				else:
+					gru_input = layer_out
+				layer_out = layer(gru_input, previous_state[:, gru_index])
 				state.append(layer_out)
 				gru_index += 1
 			else:
-				if "gru" in layer.name:
-					layer_out = layer(layer_out, previous_state[:, gru_index])
-					state.append(layer_out)
-					gru_index += 1
-				else: 
-					layer_out = layer(layer_out)
+				layer_out = layer(layer_out)
 		state = torch.stack(state, dim=1)
 		return state
 
@@ -315,13 +359,41 @@ class AutoregressiveDecoder(torch.nn.Module):
 	def __init__(self, config):
 		super(AutoregressiveDecoder, self).__init__()
 		self.layers = []
-		#self.rnn = DecoderRNN(num_decoder_layers, num_decoder_hidden, input_size, dropout=0.5)
+		num_decoder_hidden = config.num_decoder_hidden
+		num_decoder_layers = config.num_decoder_layers
+		input_size = num_decoder_hidden
+
+		self.initial_state = torch.nn.Parameter(torch.randn(num_decoder_layers,num_decoder_hidden))
+		self.embed = torch.nn.Embedding(num_embeddings=config.num_tokens + 1, embedding_dim=num_decoder_hidden)
+		self.rnn = DecoderRNN(num_decoder_layers, num_decoder_hidden, input_size, dropout=0.5)
 		self.num_outputs = config.num_tokens + 1 # for blank symbol
+		self.linear = torch.nn.Linear(num_decoder_hidden,self.num_outputs)
+		self.start_symbol = self.num_outputs - 1 # blank index == start symbol
+
+	def forward_one_step(self, input, previous_state):
+		embedding = self.embed(input)
+		state = self.rnn.forward(embedding, previous_state)
+		out = self.linear(state[:,-1])
+		return out, state
 
 	def forward(self, y, U):
 		batch_size = y.shape[0]
+		"""
 		out = torch.zeros(batch_size, max(U)+1, self.num_outputs) #.log_softmax(2)
 		out = out.to(y.device)
+		"""
+		U_max = y.shape[1]
+		outs = []
+		state = torch.stack([self.initial_state] * batch_size).to(y.device)
+		for u in range(U_max + 1): # need U+1 to get null output for final timestep 
+			if u == 0:
+				decoder_input = torch.tensor([self.start_symbol] * batch_size).to(y.device)
+			else:
+				decoder_input = y[:,u-1]
+			out, state = self.forward_one_step(decoder_input, state)
+			outs.append(out)
+		out = torch.stack(outs, dim=1)
+
 		return out
 
 class RNNOutputSelect(torch.nn.Module):
