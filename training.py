@@ -49,7 +49,7 @@ class Trainer:
 		self.df.loc[len(self.df)] = results
 		self.df.to_csv(os.path.join(self.checkpoint_path, "log.csv"))
 
-	def train(self, dataset, print_interval=10):
+	def train(self, dataset, print_interval=50):
 		train_WER = 0
 		train_loss = 0
 		num_examples = 0
@@ -62,7 +62,6 @@ class Trainer:
 			batch_size = len(x)
 			log_probs = self.model(x,y,T,U)
 			loss = -log_probs.mean()
-			print(loss)
 			if torch.isnan(loss):
 				print("nan detected!")
 				sys.exit()
@@ -94,7 +93,6 @@ class Trainer:
 		test_loss = 0
 		num_examples = 0
 		self.model.eval()
-		#self.model.cpu(); self.model.is_cuda = False # beam search is memory-intensive; do on CPU for now
 		for idx, batch in enumerate(dataset.loader):
 			x,y,T,U,_ = batch
 			batch_size = len(x)

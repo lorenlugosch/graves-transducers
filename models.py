@@ -147,31 +147,39 @@ class TransducerModel(torch.nn.Module):
 		encoder_out = self.encoder.forward(x, T) # (N, T, #labels)
 		decoder_out = self.decoder.forward(y, U) # (N, U, #labels)
 		joint_out = (encoder_out.unsqueeze(2) + decoder_out.unsqueeze(1)).log_softmax(3)
-
 		downsampling_factor = max(T) / encoder_out.shape[1]
 		T = [round(t / downsampling_factor) for t in T]
-		T = torch.IntTensor(T)
-		U = torch.IntTensor(U)
-		yy = [y[i, :U[i]].tolist() for i in range(len(y))]
-		y = torch.IntTensor([yyyy for yyy in yy for yyyy in yyy]) # god help me
 
-		"""
-		# my implementation:
-		log_probs = self.transducer_loss(encoder_out=encoder_out,
-						decoder_out=decoder_out,
-						#joint_network=self.joint_network,
-						targets=y,
-						input_lengths=T,
-						target_lengths=U,
-						reduction="none",
-						blank=self.blank_index)
-		"""
-		log_probs = -self.transducer_loss.apply(
-					joint_out,
-					y,
-					T,
-					U
-				)
+		use_ctc = False
+		if use_ctc:
+			# run the CTC forward algorithm to compute the log probs
+			encoder_out = encoder_out.transpose(0,1).log_softmax(2) # (N, T, #labels) --> (T, N, #labels)
+			log_probs = -torch.nn.functional.ctc_loss(	log_probs=encoder_out,
+									targets=y,
+									input_lengths=T,
+									target_lengths=U,
+									reduction="none",
+									blank=self.blank_index)
+
+
+		else: # use_ctc == False
+			T = torch.IntTensor(T)
+			U = torch.IntTensor(U)
+			yy = [y[i, :U[i]].tolist() for i in range(len(y))]
+			y = torch.IntTensor([yyyy for yyy in yy for yyyy in yyy]) # god help me
+
+			# my implementation:
+			#log_probs = self.transducer_loss(encoder_out=encoder_out,
+			#				decoder_out=decoder_out,
+			#				#joint_network=self.joint_network,
+			#				targets=y,
+			#				input_lengths=T,
+			#				target_lengths=U,
+			#				reduction="none",
+			#				blank=self.blank_index)
+
+			log_probs = -self.transducer_loss.apply(joint_out, y, T, U)
+
 		return log_probs
 
 	def infer(self, x, T=None):
