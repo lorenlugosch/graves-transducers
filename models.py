@@ -132,6 +132,7 @@ class TransducerModel(torch.nn.Module):
 		#self.transducer_loss = TransducerLoss()
 		self.transducer_loss = Transducer(blank_label=self.blank_index)
 		self.ctc_decoder = ctcdecode.CTCBeamDecoder(["a" for _ in range(self.num_outputs)], blank_id=self.blank_index, beam_width=config.beam_width)
+		self.beam_width = config.beam_width
 
 	def forward(self, x, y, T, U):
 		"""
@@ -145,8 +146,6 @@ class TransducerModel(torch.nn.Module):
 
 		# run the neural network
 		encoder_out = self.encoder.forward(x, T) # (N, T, #labels)
-		decoder_out = self.decoder.forward(y, U) # (N, U, #labels)
-		joint_out = (encoder_out.unsqueeze(2) + decoder_out.unsqueeze(1)).log_softmax(3)
 		downsampling_factor = max(T) / encoder_out.shape[1]
 		T = [round(t / downsampling_factor) for t in T]
 
@@ -163,6 +162,9 @@ class TransducerModel(torch.nn.Module):
 
 
 		else: # use_ctc == False
+			decoder_out = self.decoder.forward(y, U) # (N, U, #labels)
+			joint_out = (encoder_out.unsqueeze(2) + decoder_out.unsqueeze(1)).log_softmax(3)
+
 			T = torch.IntTensor(T)
 			U = torch.IntTensor(U)
 			yy = [y[i, :U[i]].tolist() for i in range(len(y))]
@@ -187,43 +189,79 @@ class TransducerModel(torch.nn.Module):
 		if next(self.parameters()).is_cuda:
 			x = x.cuda()
 
-		"""
-		# run the neural network
-		out = self.encoder.forward(x, T)
+		use_ctc = False
+		if use_ctc:
+			# run the neural network
+			out = self.encoder.forward(x, T)
 
-		# run a beam search
-		# (for now, just do CTC decoding)
-		out = torch.nn.functional.softmax(out, dim=2)
-		beam_result, beam_scores, timesteps, out_seq_len = self.ctc_decoder.decode(out)
-		decoded = [beam_result[i][0][:out_seq_len[i][0]].tolist() for i in range(len(out))]
-		"""
+			# run a beam search
+			# (for now, just do CTC decoding)
+			out = torch.nn.functional.softmax(out, dim=2)
+			beam_result, beam_scores, timesteps, out_seq_len = self.ctc_decoder.decode(out)
+			decoded = [beam_result[i][0][:out_seq_len[i][0]].tolist() for i in range(len(out))]
 
-		encoder_out = self.encoder.forward(x, T)
-		batch_size = encoder_out.shape[0]
-		downsampling_factor = max(T) / encoder_out.shape[1]
-		T = [round(t / downsampling_factor) for t in T]
-		decoded = []
-		U_max = max(T)
-		for i in range(batch_size):
-			t = 0
-			u = 0
-			decoded_i = []
-			y_u = torch.tensor([self.decoder.start_symbol] * 1).to(x.device)
-			decoder_state = torch.stack([self.decoder.initial_state] * 1).to(x.device)
-			while t < T[i]:
-				decoder_out, decoder_state = self.decoder.forward_one_step(y_u, decoder_state)
-				joint_out = (encoder_out[i, t] + decoder_out).log_softmax(1)
-				y_u = joint_out.max(dim=1)[1]
-				if y_u.item() == self.blank_index:
-					t += 1
-				else:
-					u += 1
-					decoded_i.append(y_u.item())
-				if u > U_max:
-					print("Search exceeded U_max")
-					break
+		else: #use_ctc == False
+			encoder_out = self.encoder.forward(x, T)
+			batch_size = encoder_out.shape[0]
+			downsampling_factor = max(T) / encoder_out.shape[1]
+			T = [round(t / downsampling_factor) for t in T]
+			decoded = []
+			U_max = max(T)
+			for i in range(batch_size):
+				# Initialize the beam
+				# t, u, y, state, log_prob
+				beam = [
+					[0, 0, [self.decoder.start_symbol], torch.stack([self.decoder.initial_state] * 1), 0.]
+				]
 
-			decoded.append(decoded_i)
+				# Until all hypotheses have reached the final timestep, continue
+				done = False
+				while not done:
+
+					# Consider each hypothesis in beam
+					extended_hypotheses = []
+					for hypothesis in beam:
+						t = hypothesis[0]
+						u = hypothesis[1]
+						y_star = hypothesis[2]
+						decoder_state = hypothesis[3]
+						log_prob = hypothesis[4]
+
+						if t == T[i]-1: # we've reached the final timestep
+							extended_hypotheses.append(hypothesis)
+						else: 
+							# Compute next step probs
+							decoder_input = torch.tensor([ y_star[-1] ] * 1).to(x.device)
+							decoder_out, decoder_state = self.decoder.forward_one_step(decoder_input, decoder_state)
+							joint_out = (encoder_out[i, t] + decoder_out).log_softmax(1).reshape(-1)
+
+							# Append extended hypotheses to extended_hypotheses
+							for l in range(joint_out.shape[0]): # not necessary to prune here?
+								y_u = l
+								t_extended = t + 1 if y_u == self.blank_index else t
+								u_extended = u     if y_u == self.blank_index else u + 1
+								y_star_extended = y_star if y_u == self.blank_index else y_star + [y_u]
+								log_prob_extended = log_prob + joint_out[y_u].item()
+
+								extended_hypothesis = [
+									t_extended,
+									u_extended,
+									y_star_extended,
+									decoder_state,
+									log_prob_extended
+								]
+								extended_hypotheses.append(extended_hypothesis)
+
+					# Set beam equal to top (beam_width) extended hypotheses
+					beam_scores = torch.tensor([hypothesis[4] for hypothesis in extended_hypotheses])
+					top_indices = beam_scores.topk(self.beam_width)[1]
+					beam = [extended_hypotheses[index] for index in top_indices]
+					t_beam = torch.tensor([hypothesis[0] for hypothesis in beam]) # timestep pointer for each hypothesis
+					done = not (t_beam < T[i]-1).all()
+
+				# get top (0) hypothesis, which is the second (2) element of the beam entry, and remove the start symbol (1:)
+				decoded_i = beam[0][2][1:]
+				decoded.append(decoded_i)
 		return decoded
 
 class TimeRestrictedSelfAttention(torch.nn.Module):
