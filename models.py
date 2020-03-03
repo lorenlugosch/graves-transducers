@@ -229,7 +229,7 @@ class TransducerModel(torch.nn.Module):
 
 						if t == T[i]-1: # we've reached the final timestep
 							extended_hypotheses.append(hypothesis)
-						else: 
+						else:
 							# Compute next step probs
 							decoder_input = torch.tensor([ y_star[-1] ] * 1).to(x.device)
 							decoder_out, decoder_state = self.decoder.forward_one_step(decoder_input, decoder_state)
@@ -257,7 +257,8 @@ class TransducerModel(torch.nn.Module):
 					top_indices = beam_scores.topk(self.beam_width)[1]
 					beam = [extended_hypotheses[index] for index in top_indices]
 					t_beam = torch.tensor([hypothesis[0] for hypothesis in beam]) # timestep pointer for each hypothesis
-					done = not (t_beam < T[i]-1).all()
+					u_beam = torch.tensor([hypothesis[1] for hypothesis in beam])
+					done = (u_beam > U_max).any() or not (t_beam < T[i]-1).all() # if hypothesis too long or all hypotheses have reached the final timestep, we're done
 
 				# get top (0) hypothesis, which is the second (2) element of the beam entry, and remove the start symbol (1:)
 				decoded_i = beam[0][2][1:]
