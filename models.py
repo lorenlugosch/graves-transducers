@@ -5,6 +5,7 @@ import sys
 import os
 import matplotlib.pyplot as plt
 import ctcdecode
+import time
 
 awni_transducer_path = '/home/lugosch/code/transducer'
 sys.path.insert(0, awni_transducer_path)
@@ -163,6 +164,8 @@ class TransducerModel(torch.nn.Module):
 
 		else: # use_ctc == False
 			decoder_out = self.decoder.forward(y, U) # (N, U, #labels)
+			encoder_out = encoder_out.cpu()
+			decoder_out = decoder_out.cpu() # do this on the CPU; Awni's loss is on CPU anyways
 			joint_out = (encoder_out.unsqueeze(2) + decoder_out.unsqueeze(1)).log_softmax(3)
 
 			T = torch.IntTensor(T)
@@ -184,7 +187,7 @@ class TransducerModel(torch.nn.Module):
 
 		return log_probs
 
-	def infer(self, x, T=None):
+	def infer(self, x, T=None, tokenizer=None):
 		# move inputs to GPU
 		if next(self.parameters()).is_cuda:
 			x = x.cuda()
@@ -206,7 +209,28 @@ class TransducerModel(torch.nn.Module):
 			downsampling_factor = max(T) / encoder_out.shape[1]
 			T = [round(t / downsampling_factor) for t in T]
 			decoded = []
-			U_max = max(T)
+			# Alex Graves's search (https://arxiv.org/pdf/1211.3711.pdf, section 2.6)
+			"""
+			for i in range(batch_size):
+				# Beam structure: [y, state, log_prob]
+				B = [
+					[[self.decoder.start_symbol], torch.stack([self.decoder.initial_state] * 1), 0.]
+				]
+				for t in range(T[i]):
+					A = B
+					B = []
+					A_y = [y[0] for y in A]
+					for y in A:
+						pref_y = [y[0,:i] for i in range(1, len(y[0]))]
+						pref_y_intersect_A = [pref for pref in pref_y if pref in A_y]
+						
+
+					while :
+						y_star = 
+
+			"""
+			U_max = max(T) # don't allow long outputs
+			# my hacky search
 			for i in range(batch_size):
 				# Initialize the beam
 				# t, u, y, state, log_prob
@@ -252,6 +276,13 @@ class TransducerModel(torch.nn.Module):
 								]
 								extended_hypotheses.append(extended_hypothesis)
 
+					# Merge identical hypotheses
+					#for idx, i_hypothesis in enumerate(extended_hypotheses):
+					#	for jdx, j_hypothesis in enumerate(extended_hypotheses):
+					#		if i_hypothesis[2] == j_hypothesis[2] and idx != jdx:
+					#			i_hypothesis[4] = torch.tensor([i_hypothesis[4], j_hypothesis[4]]).logsumexp(0).item()
+					#			_ = extended_hypotheses.pop(jdx)
+
 					# Set beam equal to top (beam_width) extended hypotheses
 					beam_scores = torch.tensor([hypothesis[4] for hypothesis in extended_hypotheses])
 					top_indices = beam_scores.topk(self.beam_width)[1]
@@ -259,6 +290,12 @@ class TransducerModel(torch.nn.Module):
 					t_beam = torch.tensor([hypothesis[0] for hypothesis in beam]) # timestep pointer for each hypothesis
 					u_beam = torch.tensor([hypothesis[1] for hypothesis in beam])
 					done = (u_beam > U_max).any() or not (t_beam < T[i]-1).all() # if hypothesis too long or all hypotheses have reached the final timestep, we're done
+
+					if tokenizer is not None:
+						for hypothesis in beam:
+							if len(hypothesis[2]) > 1: print(tokenizer.DecodeIds(hypothesis[2][1:]) + " | " + str(hypothesis[4]) )
+						print("")
+						time.sleep(1)
 
 				# get top (0) hypothesis, which is the second (2) element of the beam entry, and remove the start symbol (1:)
 				decoded_i = beam[0][2][1:]

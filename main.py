@@ -30,13 +30,15 @@ trainer = Trainer(model=model, config=config)
 if restart: trainer.load_checkpoint()
 
 #######################
-#from data import CollateWavsASR
-#c = CollateWavsASR()
-#indices = [247139, 46541, 53391, 188748, 276074, 196684, 211271, 159381, 137485, 204068, 273793, 4477, 68569, 240939, 233307, 52096, 72788, 168682, 131440, 50584, 157714, 190209, 79150, 159430, 252179, 21565, 44222, 277035, 6492, 165880, 192524, 262075, 254863, 173450, 80020, 232210, 4045, 89528, 126462, 67697, 267582, 119138, 252103, 275955, 179933, 238829, 228952, 253370, 87137, 251881, 213141, 139106, 20439, 174443, 193189, 50926, 209070, 25481, 221399, 36916, 54646, 265435, 175335, 59256]
-#b = [ train_dataset.__getitem__(idx) for idx in indices]
-#batch = c.__call__(b)
-#x,y,T,U,idxs = batch
-#log_probs = model(x,y,T,U)
+if not train:
+	model.eval()
+	from data import CollateWavsASR
+	c = CollateWavsASR()
+	indices = [0] # [0, 1]
+	b = [ valid_dataset.__getitem__(idx) for idx in indices]
+	batch = c.__call__(b)
+	x,y,T,U,idxs = batch
+	log_probs = model(x,y,T,U)
 #######################
 
 # Train the final model
