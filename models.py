@@ -135,6 +135,12 @@ class TransducerModel(torch.nn.Module):
 		self.ctc_decoder = ctcdecode.CTCBeamDecoder(["a" for _ in range(self.num_outputs)], blank_id=self.blank_index, beam_width=config.beam_width)
 		self.beam_width = config.beam_width
 
+	def load_pretrained(self, model_path=None):
+		if model_path == None:
+			model_path = os.path.join(self.checkpoint_path, "model_state.pth")
+		device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+		self.load_state_dict(torch.load(model_path, map_location=device))
+
 	def forward(self, x, y, T, U):
 		"""
 		returns log probs for each example
@@ -192,6 +198,7 @@ class TransducerModel(torch.nn.Module):
 		if next(self.parameters()).is_cuda:
 			x = x.cuda()
 
+		"""
 		use_ctc = False
 		if use_ctc:
 			# run the neural network
@@ -204,6 +211,8 @@ class TransducerModel(torch.nn.Module):
 			decoded = [beam_result[i][0][:out_seq_len[i][0]].tolist() for i in range(len(out))]
 
 		else: #use_ctc == False
+		"""
+		with torch.no_grad():
 			encoder_out = self.encoder.forward(x, T)
 			batch_size = encoder_out.shape[0]
 			downsampling_factor = max(T) / encoder_out.shape[1]
@@ -293,7 +302,7 @@ class TransducerModel(torch.nn.Module):
 
 					if tokenizer is not None:
 						for hypothesis in beam:
-							if len(hypothesis[2]) > 1: print(tokenizer.DecodeIds(hypothesis[2][1:]) + " | " + str(hypothesis[4]) )
+							print(tokenizer.DecodeIds(hypothesis[2][1:]) + " | " + str(hypothesis[4]) )
 						print("")
 						time.sleep(1)
 
@@ -370,9 +379,9 @@ class Encoder(torch.nn.Module):
 			self.layers.append(layer)
 
 			# downsample
-			if idx == 0:
-				layer = Downsample(method="avg", factor=2, axis=1)
-				self.layers.append(layer)
+			#if idx == 0:
+			layer = Downsample(method="avg", factor=2, axis=1)
+			self.layers.append(layer)
 
 		#layer = torch.nn.LeakyReLU(0.125)
 		#self.layers.append(layer)

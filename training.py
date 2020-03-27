@@ -49,7 +49,7 @@ class Trainer:
 		self.df.loc[len(self.df)] = results
 		self.df.to_csv(os.path.join(self.checkpoint_path, "log.csv"))
 
-	def train(self, dataset, print_interval=50):
+	def train(self, dataset, print_interval=100):
 		train_WER = 0
 		train_loss = 0
 		num_examples = 0
@@ -73,7 +73,7 @@ class Trainer:
 			num_examples += batch_size
 			if idx % print_interval == 0:
 				print("loss: " + str(loss.cpu().data.numpy().item()))
-				guess = self.model.infer(x, T)[0][:U[0]]
+				guess = self.model.infer(x[:1], T[:1])[0][:U[0]]
 				print("guess:", dataset.tokenizer.DecodeIds(guess))
 				truth = y[0].cpu().data.numpy().tolist()[:U[0]]
 				print("truth:", dataset.tokenizer.DecodeIds(truth))
@@ -93,7 +93,7 @@ class Trainer:
 		test_loss = 0
 		num_examples = 0
 		self.model.eval()
-		for idx, batch in enumerate(dataset.loader):
+		for idx, batch in enumerate(tqdm(dataset.loader)): #enumerate(dataset.loader):
 			x,y,T,U,_ = batch
 			batch_size = len(x)
 			num_examples += batch_size
@@ -101,8 +101,9 @@ class Trainer:
 			loss = -log_probs.mean()
 			test_loss += loss.item() * batch_size
 			WERs = []
-			guesses = self.model.infer(x, T)
-			for i in range(batch_size):
+			guesses = self.model.infer(x[:2], T[:2])
+			print("decoding subset")
+			for i in range(2): #range(batch_size):
 				guess = guesses[i][:U[i]]
 				truth = y[i].cpu().data.numpy().tolist()[:U[i]]
 				WERs.append(compute_WER(dataset.tokenizer.DecodeIds(truth), dataset.tokenizer.DecodeIds(guess)))
