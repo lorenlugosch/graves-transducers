@@ -7,131 +7,24 @@ import matplotlib.pyplot as plt
 import ctcdecode
 import time
 
-awni_transducer_path = '/home/lugosch/code/transducer'
-sys.path.insert(0, awni_transducer_path)
-from transducer import Transducer
+import torch.utils
+import torch.utils.checkpoint
 
-class CTCModel(torch.nn.Module):
-	def __init__(self, config):
-		super(CTCModel, self).__init__()
-		self.encoder = Encoder(config)
+#awni_transducer_path = '/home/lugosch/code/transducer'
+#sys.path.insert(0, awni_transducer_path)
+#from transducer import Transducer
 
-		# beam search
-		self.blank_index = self.encoder.blank_index; self.num_outputs = self.encoder.num_outputs
-		labels = ["a" for _ in range(self.num_outputs)] # doesn't matter, just need 1-char labels
-		self.decoder = ctcdecode.CTCBeamDecoder(labels, blank_id=self.blank_index, beam_width=config.beam_width)
-
-	def load_pretrained(self, model_path=None):
-		if model_path == None:
-			model_path = os.path.join(self.checkpoint_path, "model_state.pth")
-		device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-		self.load_state_dict(torch.load(model_path, map_location=device))
-
-	def forward(self, x, y, T, U):
-		"""
-		returns log probs for each example
-		"""
-
-		# move inputs to GPU
-		if next(self.parameters()).is_cuda:
-			x = x.cuda()
-			y = y.cuda()
-
-		# run the neural network
-		encoder_out = self.encoder.forward(x, T)
-
-		# run the forward algorithm to compute the log probs
-		downsampling_factor = max(T) / encoder_out.shape[1]
-		T = [round(t / downsampling_factor) for t in T]
-		encoder_out = encoder_out.transpose(0,1) # (N, T, #labels) --> (T, N, #labels)
-		log_probs = -torch.nn.functional.ctc_loss(	log_probs=encoder_out,
-								targets=y,
-								input_lengths=T,
-								target_lengths=U,
-								reduction="none",
-								blank=self.blank_index)
-		return log_probs
-
-	def infer(self, x, T=None):
-		# move inputs to GPU
-		if next(self.parameters()).is_cuda:
-			x = x.cuda()
-
-		# run the neural network
-		out = self.encoder.forward(x, T)
-
-		# run a beam search
-		out = torch.nn.functional.softmax(out, dim=2)
-		beam_result, beam_scores, timesteps, out_seq_len = self.decoder.decode(out)
-		decoded = [beam_result[i][0][:out_seq_len[i][0]].tolist() for i in range(len(out))]
-		return decoded
-
-class TransducerLoss(torch.nn.Module):
-	def __init__(self):
-		super(TransducerLoss, self).__init__()
-
-	def forward(self,encoder_out,decoder_out,targets,input_lengths,target_lengths,reduction="none",blank=0):
-		"""
-		encoder_out: FloatTensor (N, max(input_lengths), #labels)
-		decoder_out: FloatTensor (N, max(target_lengths)+1, #labels)
-		targets: LongTensor (N, max(target_lengths))
-		input_lengths: LongTensor (N)
-		target_lengths: LongTensor (N)
-		reduction: "none", "avg"
-		blank: int
-		"""
-		batch_size = encoder_out.shape[0]
-		T_max = encoder_out.shape[1]
-		U_max = decoder_out.shape[1]
-		y = targets
-
-		log_alpha = torch.zeros(batch_size, T_max, U_max)
-		log_alpha = log_alpha.to(encoder_out.device)
-		for t in range(T_max):
-			for u in range(U_max):
-				if u == 0:
-
-					if t == 0:
-						log_alpha[:, t, u] = 0.
-
-					else: #t > 0
-						null_t_1_0 = encoder_out[:, t-1, blank] + decoder_out[:, 0, blank]
-						log_alpha[:, t, u] = log_alpha[:, t-1, u] + null_t_1_0
-
-				else: #u > 0
-
-					if t == 0:
-						y_0_u_1 = torch.gather(encoder_out[:, t], dim=1, index=y[:,u-1].view(-1,1) ).reshape(-1) + torch.gather(decoder_out[:, u-1], dim=1, index=y[:,u-1].view(-1,1)).reshape(-1)
-						log_alpha[:, t, u] = log_alpha[:,t,u-1] + y_0_u_1
-
-					else: #t > 0
-						y_t_u_1 = torch.gather(encoder_out[:, t], dim=1, index=y[:,u-1].view(-1,1)).reshape(-1) + torch.gather(decoder_out[:, u-1], dim=1, index=y[:,u-1].view(-1,1)).reshape(-1)
-						null_t_1_u = encoder_out[:, t-1, blank] + decoder_out[:, u, blank]
-
-						log_alpha[:, t, u] = torch.logsumexp(torch.stack([
-							log_alpha[:, t-1, u] + null_t_1_u,
-							log_alpha[:, t, u-1] + y_t_u_1
-						]), dim=0)
-
-		log_probs = []
-		for i in range(batch_size):
-			T = input_lengths[i]
-			U = target_lengths[i]
-			null_T_1_U = encoder_out[i, T-1, blank] + decoder_out[i, U, blank]
-			log_p_y_x = log_alpha[i, T-1, U] + null_T_1_U
-			log_probs.append(log_p_y_x)
-
-		log_probs = torch.stack(log_probs)
-		return log_probs
+from warprnnt_pytorch import RNNTLoss
+rnnt_loss = RNNTLoss()
 
 class TransducerModel(torch.nn.Module):
 	def __init__(self, config):
 		super(TransducerModel, self).__init__()
 		self.encoder = Encoder(config)
 		self.decoder = AutoregressiveDecoder(config)
-		self.blank_index = self.encoder.blank_index; self.num_outputs = self.encoder.num_outputs
-		#self.transducer_loss = TransducerLoss()
-		self.transducer_loss = Transducer(blank_label=self.blank_index)
+		self.joiner = Joiner(config)
+		self.blank_index = self.joiner.blank_index; self.num_outputs = self.joiner.num_outputs
+		#self.transducer_loss = Transducer(blank_label=self.blank_index)
 		self.ctc_decoder = ctcdecode.CTCBeamDecoder(["a" for _ in range(self.num_outputs)], blank_id=self.blank_index, beam_width=config.beam_width)
 		self.beam_width = config.beam_width
 
@@ -153,44 +46,23 @@ class TransducerModel(torch.nn.Module):
 
 		# run the neural network
 		encoder_out = self.encoder.forward(x, T) # (N, T, #labels)
+		decoder_out = self.decoder.forward(y, U) # (N, U, #labels)
+		joint_out = self.joiner.forward(encoder_out, decoder_out)
+		#joint_out = torch.utils.checkpoint.checkpoint(self.joiner, encoder_out, decoder_out)
+
 		downsampling_factor = max(T) / encoder_out.shape[1]
 		T = [round(t / downsampling_factor) for t in T]
+		T = torch.IntTensor(T)
+		U = torch.IntTensor(U)
+		if next(self.parameters()).is_cuda:
+			T = T.cuda()
+			U = U.cuda()
+		y = y.int()
+		#yy = [y[i, :U[i]].tolist() for i in range(len(y))]
+		#y = torch.IntTensor([yyyy for yyy in yy for yyyy in yyy])
 
-		use_ctc = False
-		if use_ctc:
-			# run the CTC forward algorithm to compute the log probs
-			encoder_out = encoder_out.transpose(0,1).log_softmax(2) # (N, T, #labels) --> (T, N, #labels)
-			log_probs = -torch.nn.functional.ctc_loss(	log_probs=encoder_out,
-									targets=y,
-									input_lengths=T,
-									target_lengths=U,
-									reduction="none",
-									blank=self.blank_index)
-
-
-		else: # use_ctc == False
-			decoder_out = self.decoder.forward(y, U) # (N, U, #labels)
-			encoder_out = encoder_out.cpu()
-			decoder_out = decoder_out.cpu() # do this on the CPU; Awni's loss is on CPU anyways
-			joint_out = (encoder_out.unsqueeze(2) + decoder_out.unsqueeze(1)).log_softmax(3)
-
-			T = torch.IntTensor(T)
-			U = torch.IntTensor(U)
-			yy = [y[i, :U[i]].tolist() for i in range(len(y))]
-			y = torch.IntTensor([yyyy for yyy in yy for yyyy in yyy]) # god help me
-
-			# my implementation:
-			#log_probs = self.transducer_loss(encoder_out=encoder_out,
-			#				decoder_out=decoder_out,
-			#				#joint_network=self.joint_network,
-			#				targets=y,
-			#				input_lengths=T,
-			#				target_lengths=U,
-			#				reduction="none",
-			#				blank=self.blank_index)
-
-			log_probs = -self.transducer_loss.apply(joint_out, y, T, U)
-
+		#log_probs = -self.transducer_loss.apply(joint_out, y, T, U)
+		log_probs = -rnnt_loss(acts=joint_out, labels=y, act_lens=T, label_lens=U)
 		return log_probs
 
 	def infer(self, x, T=None, tokenizer=None):
@@ -198,20 +70,6 @@ class TransducerModel(torch.nn.Module):
 		if next(self.parameters()).is_cuda:
 			x = x.cuda()
 
-		"""
-		use_ctc = False
-		if use_ctc:
-			# run the neural network
-			out = self.encoder.forward(x, T)
-
-			# run a beam search
-			# (for now, just do CTC decoding)
-			out = torch.nn.functional.softmax(out, dim=2)
-			beam_result, beam_scores, timesteps, out_seq_len = self.ctc_decoder.decode(out)
-			decoded = [beam_result[i][0][:out_seq_len[i][0]].tolist() for i in range(len(out))]
-
-		else: #use_ctc == False
-		"""
 		with torch.no_grad():
 			encoder_out = self.encoder.forward(x, T)
 			batch_size = encoder_out.shape[0]
@@ -232,7 +90,6 @@ class TransducerModel(torch.nn.Module):
 					for y in A:
 						pref_y = [y[0,:i] for i in range(1, len(y[0]))]
 						pref_y_intersect_A = [pref for pref in pref_y if pref in A_y]
-						
 
 					while :
 						y_star = 
@@ -266,7 +123,7 @@ class TransducerModel(torch.nn.Module):
 							# Compute next step probs
 							decoder_input = torch.tensor([ y_star[-1] ] * 1).to(x.device)
 							decoder_out, decoder_state = self.decoder.forward_one_step(decoder_input, decoder_state)
-							joint_out = (encoder_out[i, t] + decoder_out).log_softmax(1).reshape(-1)
+							joint_out = self.joiner.forward_one_step(encoder_out[i, t], decoder_out).reshape(-1) #(encoder_out[i, t] + decoder_out).log_softmax(1).reshape(-1)
 
 							# Append extended hypotheses to extended_hypotheses
 							for l in range(joint_out.shape[0]): # not necessary to prune here?
@@ -311,12 +168,6 @@ class TransducerModel(torch.nn.Module):
 				decoded.append(decoded_i)
 		return decoded
 
-class TimeRestrictedSelfAttention(torch.nn.Module):
-	def __init__(self, in_dim, out_dim, key_dim, filter_length, stride):
-		super(TimeRestrictedSelfAttention, self).__init__()
-		self.key_linear = torch.nn.Linear(in_dim, key_dim)
-		self.query_linear = torch.nn.Linear(in_dim, key_dim)
-		self.value_linear = torch.nn.Linear(in_dim, out_dim)
 
 class Conv(torch.nn.Module):
 	def __init__(self, in_dim, out_dim, filter_length, stride):
@@ -335,6 +186,26 @@ class Conv(torch.nn.Module):
 		out = torch.nn.functional.pad(out, (left_padding, right_padding))
 		out = self.conv(out)
 		out = out.transpose(1,2)
+		return out
+
+class Joiner(torch.nn.Module):
+	def __init__(self, config):
+		super(Joiner, self).__init__()
+		self.tanh = torch.nn.Tanh()
+		self.num_outputs = config.num_tokens + 1
+		self.blank_index = 0 # hard coded
+		self.linear = torch.nn.Linear(config.num_joiner_hidden, self.num_outputs)
+
+	def forward(self, encoder_out, decoder_out):
+		combined = (encoder_out.unsqueeze(2) + decoder_out.unsqueeze(1))
+		out = self.tanh(combined)
+		out = self.linear(out).log_softmax(3)
+		return out
+
+	def forward_one_step(self, encoder_out, decoder_out):
+		combined = encoder_out + decoder_out
+		out = self.tanh(combined)
+		out = self.linear(out)
 		return out
 
 class Encoder(torch.nn.Module):
@@ -372,7 +243,7 @@ class Encoder(torch.nn.Module):
 			self.layers.append(layer)
 
 			# fully-connected
-			layer = torch.nn.Linear(out_dim, config.num_encoder_hidden)
+			layer = Conv(in_dim=out_dim, out_dim=config.num_encoder_hidden, filter_length=3, stride=1) #layer = torch.nn.Linear(out_dim, config.num_encoder_hidden)
 			out_dim = config.num_encoder_hidden
 			self.layers.append(layer)
 			layer = torch.nn.LeakyReLU(0.125)
@@ -380,19 +251,15 @@ class Encoder(torch.nn.Module):
 
 			# downsample
 			#if idx == 0:
-			layer = Downsample(method="avg", factor=2, axis=1)
-			self.layers.append(layer)
-
-		#layer = torch.nn.LeakyReLU(0.125)
-		#self.layers.append(layer)
+			#	layer = Downsample(method="avg", factor=2, axis=1)
+			#	self.layers.append(layer)
 
 		# final classifier
-		self.num_outputs = config.num_tokens + 1 # for blank symbol
-		self.blank_index = 0 #this is hard-coded in awni's transducer code #config.num_tokens
+		self.num_outputs = config.num_joiner_hidden #config.num_tokens + 1 # for blank symbol
 		layer = torch.nn.Linear(out_dim, self.num_outputs)
 		self.layers.append(layer)
 
-		#layer = torch.nn.LogSoftmax(dim=2)
+		#layer = Downsample(method="avg", factor=4, axis=1)
 		#self.layers.append(layer)
 
 		self.layers = torch.nn.ModuleList(self.layers)
@@ -459,9 +326,9 @@ class AutoregressiveDecoder(torch.nn.Module):
 		self.initial_state = torch.nn.Parameter(torch.randn(num_decoder_layers,num_decoder_hidden))
 		self.embed = torch.nn.Embedding(num_embeddings=config.num_tokens + 1, embedding_dim=num_decoder_hidden)
 		self.rnn = DecoderRNN(num_decoder_layers, num_decoder_hidden, input_size, dropout=0.5)
-		self.num_outputs = config.num_tokens + 1 # for blank symbol
-		self.linear = torch.nn.Linear(num_decoder_hidden,self.num_outputs)
-		self.start_symbol = self.num_outputs - 1 # blank index == start symbol
+		self.num_outputs = config.num_joiner_hidden
+		self.linear = torch.nn.Linear(num_decoder_hidden, self.num_outputs)
+		self.start_symbol = config.num_tokens
 
 	def forward_one_step(self, input, previous_state):
 		embedding = self.embed(input)

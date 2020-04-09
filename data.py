@@ -36,6 +36,7 @@ def read_config(config_file):
 	config.num_encoder_hidden=int(parser.get("model", "num_encoder_hidden"))
 	config.num_decoder_layers=int(parser.get("model", "num_decoder_layers"))
 	config.num_decoder_hidden=int(parser.get("model", "num_decoder_hidden"))
+	config.num_joiner_hidden=int(parser.get("model", "num_joiner_hidden"))
 	config.num_mel_bins=int(parser.get("model", "num_mel_bins"))
 	config.tokenizer_training_text_path=parser.get("model", "tokenizer_training_text_path")
 	config.normalize_fbank=(parser.get("model", "normalize_fbank") == "True")

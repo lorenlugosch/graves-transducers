@@ -17,7 +17,8 @@ class Trainer:
 		self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=self.lr_period, gamma=self.gamma)
 		self.epoch = 0
 		self.df = None
-		if torch.cuda.is_available(): self.model.cuda()
+		if torch.cuda.is_available():
+			self.model.cuda()
 		self.best_WER = np.inf
 
 	def load_checkpoint(self):

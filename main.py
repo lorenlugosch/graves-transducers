@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from models import CTCModel, TransducerModel
+from models import TransducerModel
 from data import get_ASR_datasets, read_config
 from training import Trainer
 import argparse
@@ -46,7 +46,9 @@ if train:
 	for epoch in range(config.num_epochs):
 		print("========= Epoch %d of %d =========" % (epoch+1, config.num_epochs))
 		train_WER, train_loss = trainer.train(train_dataset)
+		model = model.cpu()
 		valid_WER, valid_loss = trainer.test(valid_dataset, set="valid")
+		if torch.cuda.is_available(): model = model.cuda()
 
 		print("========= Results: epoch %d of %d =========" % (epoch+1, config.num_epochs))
 		print("train WER: %.2f| train loss: %.2f| valid WER: %.2f| valid loss: %.2f\n" % (train_WER, train_loss, valid_WER, valid_loss) )
